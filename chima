@@ -1,0 +1,14 @@
+{
+  "chainId": 143,
+  "address": "0x3E17Eed0818AC138A9875F73A5737EB7CBE3E4C2",
+  "name": "Chima Coin",
+  "symbol": "CHIMA",
+  "decimals": 18,
+  "extensions": {
+    "coinGeckoId": "chima-coin", 
+    "bridgeInfo": {
+      "protocol": "wormhole", 
+      "bridgeAddress": "0x0000000000000000000000000000000000000000"
+    }
+  }
+}
