@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>INR Chima</title>
+  <script src="https://unpkg.com/wagmi/dist/wagmi.umd.min.js"></script>
+  <script src="https://unpkg.com/viem/dist/viem.umd.min.js"></script>
+  <style>
+    body{ text-align:center; padding:4rem; font-family: system-ui }
+    input, button{ padding:.5rem; margin:.5rem }
+  </style>
+</head>
+<body>
+
+  <h1>INR Chima</h1>
+  <p id="wallet"></p>
+  <p id="bal"></p>
+
+  <div id="connected"></div>
+
+  <script type="module">
+    const { WagmiProvider, createConfig, http } = wagmi;
+    const { mainnet } = wagmi.chains;
+    const { injected, walletConnect } = wagmi.connectors;
+    const { useAccount, useReadContract, useWriteContract } = wagmi;
+
+    const config = createConfig({
+      chains: ,
+      transports: { : http() },
+      connectors: [injected(), walletConnect({ projectId: '0000' })]
+    });
+
+    window.ethereum.request({ method: 'eth_requestAccounts' }).then(accounts => {
+      const walletEl = document.getElementById('wallet');
+      walletEl.innerText = `Connected: ${accounts[0]}`;
+      const balEl = document.getElementById('bal');
+
+      const { data } = useReadContract({
+        address: '0xYOUR_TOKEN_CONTRACT',
+        abi: [{ name: 'balanceOf', inputs: , outputs: , stateMutability: 'view', type: 'function' }],
+        functionName: 'balanceOf',
+        args: });
+
+      balEl.innerText = `Balance: ${Number(data)/1e18} tokens`;
+    });
+  </script>
+
+</body>
+</html>
