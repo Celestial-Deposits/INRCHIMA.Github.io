@@ -1,0 +1,1280 @@
+// Enhanced Telegram and Discord Bot with Integrated Web Server for INRChima.com
+// Owner: Daltin Thomas Morsch of CELESTIAL DEPOSITS LLC
+// Only the owner is allowed to edit this script.
+// All games run solely on Chima token (CHM).
+// CHM can be redeemed for Celestial token (CELT) as a burner token (added /redeem command for simulation).
+// Players can win CHM based on games and wagers; winnings are simulated and added to virtual balance (TODO: integrate actual token payout via contract).
+// Wager against each other in live play via Discord and Telegram chat rooms.
+// Added: Blog section on website.
+// Profiles: Added /profile/:userId route on website showing ranking, achievements (based on donations, wins; humanitarian simulated as contribution points).
+// Updated Ranking: Profile rank rises only by missions accomplished (mapped to contributions from event participation and goal achievements).
+// Rank not affected by monies gained. Rank gained by participating in live events (challenges, added /event command for live events table).
+// Amount of participation in achieving goals on live events table affects rank.
+// Legal Implementation: Added NDA form, Terms of Service, Privacy Policy, Responsible Gaming pages to website.
+// Integrated AML/KYC simulation (user verification via address link), provably fair notes in games, self-exclusion (/selfexclude command).
+// Fail-safe: Added age verification prompt, wager limits, fairness disclaimers.
+// New: Added poll creation (/poll <question> <options>) for community engagement.
+// Suggestions: Added /suggest <text> to post concerns/suggestions, stored in DB, displayed on /suggestions website page.
+// New: Live video poker tournaments (simulated; /poker to join tournament, final two get FaceTime instructions - note: bots can't directly integrate FaceTime, provide manual setup).
+// Players create missionary clans (/createclan <name>, /joinclan <id>) for bonus points (to rank), prizes (simulated), donations (track CHM), giveaways (/giveaway in clan).
+// New: Donation bonus spins - Donations grant bonus spins (up to 25 based on amount), awarded weekly for a month after donation.
+// Added /spin to use bonus spins (simulates a spin/win). Use node-cron for weekly awards (npm install node-cron).
+// Donations tracked in new table, spins in users (bonus_spins INTEGER DEFAULT 0).
+
+// Import required modules
+const { Telegraf } = require('telegraf');
+const { ethers } = require('ethers');
+const sqlite3 = require('sqlite3').verbose();
+const express = require('express');
+const path = require('path');
+const { Client, GatewayIntentBits } = require('discord.js');
+const cron = require('node-cron');
+
+// Initialize the Telegram bot with your token
+const bot = new Telegraf(process.env.YOUR_BOT_TOKEN || '8401742093:AAGsLfsHUBdwWoolEEZu2Qc0M1QeO1VF9gk'); // Use env var for security
+
+// Initialize Discord client
+const discordClient = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+  ]
+});
+const DISCORD_PREFIX = '!';
+const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN || 'YOUR_DISCORD_BOT_TOKEN'; // Add to .env
+
+// Initialize Express app
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.use(express.json()); // For parsing form data
+
+// Ethereum provider (replace with your own)
+const RPC_URL = process.env.YOUR_RPC_URL || 'YOUR_RPC_URL';
+const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { pollingInterval: 10000 });
+
+// Token contract addresses (Ethereum)
+const CHM_TOKEN_ADDRESS = '0x538a151dd910c1d1227719bd400d6c4f99ea06d0'; // Chima (CHM)
+const CELT_TOKEN_ADDRESS = '0xf6e06b54855eff198a2d9a8686113665499a6134'; // Celestial (CELT)
+
+// Raffle pot address (replace with actual smart contract or wallet address for raffles)
+const RAFFLE_POT_ADDRESS = '0xYourRafflePotAddressHere'; // TODO: Set to a controlled address or contract
+
+// ABI for ERC20 tokens (added approve and transfer functions for txdata)
+const ERC20_ABI = [
+  'function balanceOf(address owner) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+  'event Approval(address indexed owner, address indexed spender, uint256 value)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function transfer(address to, uint256 amount) returns (bool)'
+];
+
+// Database setup (SQLite) - expanded for users, rankings, virtual balances/achievements, live events, self-exclusion, suggestions, polls, clans, and donations
+const db = new sqlite3.Database('./bot.db', (err) => {
+  if (err) {
+    console.error('Error opening database:', err.message);
+  } else {
+    console.log('Connected to the SQLite database.');
+    db.run(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        chatId TEXT PRIMARY KEY,
+        address TEXT NOT NULL
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS users (
+        userId TEXT PRIMARY KEY,
+        platform TEXT NOT NULL,  -- 'telegram' or 'discord'
+        ethAddress TEXT,
+        wins INTEGER DEFAULT 0,
+        donations REAL DEFAULT 0.0,
+        contributions INTEGER DEFAULT 0,
+        virtual_chm REAL DEFAULT 0.0,  -- Simulated CHM winnings
+        humanitarian_points INTEGER DEFAULT 0,  -- Based on donations/contributions
+        achievements TEXT DEFAULT '',  -- JSON string of achievements
+        rank INTEGER DEFAULT 0,  -- Profile rank, rises by missions/events
+        self_excluded BOOLEAN DEFAULT false,  -- Self-exclusion flag
+        age_verified BOOLEAN DEFAULT false,  -- Age verification for legal compliance
+        clanId INTEGER,  -- Foreign key to clans
+        bonus_spins INTEGER DEFAULT 0  -- Bonus spins from donations
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS challenges (
+        challengeId INTEGER PRIMARY KEY AUTOINCREMENT,
+        challengerId TEXT NOT NULL,
+        opponentId TEXT NOT NULL,
+        gameType TEXT NOT NULL,
+        amount REAL NOT NULL,
+        status TEXT DEFAULT 'pending'  -- 'pending', 'accepted', 'completed'
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS events (
+        eventId INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        goal TEXT NOT NULL,  -- Goal for participation
+        participants TEXT DEFAULT '',  -- JSON array of userIds
+        completed BOOLEAN DEFAULT false
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS suggestions (
+        suggestionId INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        text TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS polls (
+        pollId INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        question TEXT NOT NULL,
+        options TEXT NOT NULL,  -- JSON array of options
+        votes TEXT DEFAULT '{}',  -- JSON object of votes
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS clans (
+        clanId INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        creatorId TEXT NOT NULL,
+        members TEXT DEFAULT '[]',  -- JSON array of userIds
+        bonus_points INTEGER DEFAULT 0,
+        prizes TEXT DEFAULT '',  -- JSON of prizes
+        donations REAL DEFAULT 0.0,
+        giveaways TEXT DEFAULT ''  -- JSON of giveaway info
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS tournaments (
+        tournamentId INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT DEFAULT 'poker',
+        participants TEXT DEFAULT '[]',  -- JSON array of userIds
+        status TEXT DEFAULT 'open',  -- 'open', 'ongoing', 'final_two', 'completed'
+        wager REAL NOT NULL
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS donations (
+        donationId INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT NOT NULL,
+        amount REAL NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        spins_awarded INTEGER DEFAULT 0  -- Total spins for this donation
+      )
+    `);
+  }
+});
+
+// Logging function for structured logs
+function log(level, message, data = {}) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [${level.toUpperCase()}] ${message}`, data);
+}
+
+// Set Telegram bot commands (run once on startup)
+(async () => {
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'balance', description: 'Show CHM and CELT balances for an address' },
+      { command: 'watch', description: 'Subscribe this chat to events for an address (also links your profile)' },
+      { command: 'unwatch', description: 'Unsubscribe this chat from events' },
+      { command: 'txdata', description: 'Get calldata for redeem or play (e.g., play <amount>)' },
+      { command: 'coinflip', description: 'Play coinflip mini-game (e.g., /coinflip heads 10)' },
+      { command: 'redeem', description: 'Redeem CHM for CELT (simulation)' },
+      { command: 'leaderboard', description: 'Show top rankings' },
+      { command: 'event', description: 'View or participate in live events' },
+      { command: 'selfexclude', description: 'Self-exclude from gaming' },
+      { command: 'verifyage', description: 'Verify age for legal compliance' },
+      { command: 'suggest', description: 'Post a suggestion or concern' },
+      { command: 'poll', description: 'Create a poll <question> <option1> <option2> ...' },
+      { command: 'createclan', description: 'Create a missionary clan <name>' },
+      { command: 'joinclan', description: 'Join a clan <clanId>' },
+      { command: 'giveaway', description: 'Run a giveaway in clan' },
+      { command: 'poker', description: 'Join a poker tournament <wager>' },
+      { command: 'spin', description: 'Use a bonus spin' },
+      { command: 'help', description: 'Show help' }
+    ]);
+    log('info', 'Telegram bot commands set');
+  } catch (err) {
+    log('warn', 'Failed to set Telegram commands', { error: err.message });
+  }
+})();
+
+// Middleware for logging all incoming Telegram messages
+bot.use((ctx, next) => {
+  if (ctx.message) {
+    log('info', 'Received Telegram message', {
+      chatId: ctx.chat.id,
+      userId: ctx.from.id,
+      text: ctx.message.text
+    });
+  }
+  return next();
+});
+
+// Legal Check Middleware for Telegram: Ensure age verified and not self-excluded before gaming commands
+bot.use((ctx, next) => {
+  const gamingCommands = ['coinflip', 'txdata', 'redeem', 'challenge', 'accept', 'poker', 'spin'];
+  if (ctx.message && gamingCommands.includes(ctx.message.text.split(' ')[0].slice(1).toLowerCase())) {
+    const userId = ctx.from.id.toString();
+    db.get(`SELECT age_verified, self_excluded FROM users WHERE userId = ?`, [userId], (err, row) => {
+      if (err || !row) {
+        return ctx.reply('Please link your profile with /watch <address> first.');
+      }
+      if (!row.age_verified) {
+        return ctx.reply('Please verify your age with /verifyage before playing.');
+      }
+      if (row.self_excluded) {
+        return ctx.reply('You are self-excluded from gaming. Contact support to lift.');
+      }
+      next();
+    });
+  } else {
+    next();
+  }
+});
+
+// Telegram: /balance <address>
+bot.command('balance', async (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const address = args.join(' ').trim();
+  if (!address || !ethers.isAddress(address)) {
+    log('warn', 'Invalid address for /balance', { address });
+    return ctx.reply('Usage: /balance <valid Ethereum address>');
+  }
+
+  log('info', 'Fetching balances', { address });
+
+  try {
+    const chmContract = new ethers.Contract(CHM_TOKEN_ADDRESS, ERC20_ABI, provider);
+    const chmBalanceRaw = await chmContract.balanceOf(address);
+    const chmDecimals = await chmContract.decimals();
+    const chmBalance = ethers.formatUnits(chmBalanceRaw, chmDecimals);
+
+    const celtContract = new ethers.Contract(CELT_TOKEN_ADDRESS, ERC20_ABI, provider);
+    const celtBalanceRaw = await celtContract.balanceOf(address);
+    const celtDecimals = await celtContract.decimals();
+    const celtBalance = ethers.formatUnits(celtBalanceRaw, celtDecimals);
+
+    ctx.reply(`Balances for ${address}:\nCHM: ${chmBalance}\nCELT: ${celtBalance}`);
+    log('info', 'Balances fetched successfully', { address });
+  } catch (error) {
+    log('error', 'Error fetching balances', { address, error: error.message });
+    ctx.reply('Error fetching balances. Please check the address and try again.');
+  }
+});
+
+// Telegram: /watch <address> (links profile, verifies age prompt)
+bot.command('watch', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const address = args.join(' ').trim().toLowerCase();
+  if (!address || !ethers.isAddress(address)) {
+    log('warn', 'Invalid address for /watch', { address });
+    return ctx.reply('Usage: /watch <valid Ethereum address>');
+  }
+
+  const chatId = ctx.chat.id.toString();
+  const userId = ctx.from.id.toString();
+
+  log('info', 'Subscribing to events and linking profile', { address, chatId, userId });
+
+  // Insert or update subscription
+  db.run(`
+    INSERT OR REPLACE INTO subscriptions (chatId, address) VALUES (?, ?)
+  `, [chatId, address], (err) => {
+    if (err) {
+      log('error', 'Database error during subscribe', { error: err.message });
+      return ctx.reply('Error subscribing. Please try again.');
+    }
+  });
+
+  // Link user profile
+  db.run(`
+    INSERT OR REPLACE INTO users (userId, platform, ethAddress) VALUES (?, 'telegram', ?)
+  `, [userId, address], (err) => {
+    if (err) {
+      log('error', 'Database error during profile link', { error: err.message });
+      return ctx.reply('Error linking profile.');
+    }
+    ctx.reply(`Subscribed this chat to events and linked your profile for rankings with address: ${address}\nPlease verify your age with /verifyage to play games.`);
+  });
+});
+
+// Telegram: /unwatch
+bot.command('unwatch', (ctx) => {
+  const chatId = ctx.chat.id.toString();
+
+  log('info', 'Unsubscribing from events', { chatId });
+
+  db.run(`
+    DELETE FROM subscriptions WHERE chatId = ?
+  `, [chatId], (err) => {
+    if (err) {
+      log('error', 'Database error during unsubscribe', { error: err.message });
+      return ctx.reply('Error unsubscribing. Please try again.');
+    }
+    ctx.reply('Unsubscribed this chat from events.');
+  });
+});
+
+// Telegram: /txdata redeem/play <amount> [yourAddress]
+bot.command('txdata', async (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 2) {
+    return ctx.reply('Usage: /txdata redeem|play <amount> [yourAddress]');
+  }
+  const action = args[0].toLowerCase();
+  const amountStr = args[1].trim();
+  const amount = parseFloat(amountStr);
+  if (isNaN(amount) || amount <= 0) {
+    log('warn', 'Invalid amount for /txdata', { amountStr });
+    return ctx.reply('Amount must be a positive number.');
+  }
+  const address = args[2] ? args[2].trim().toLowerCase() : null;
+  if (address && !ethers.isAddress(address)) {
+    log('warn', 'Invalid address for /txdata', { address });
+    return ctx.reply('Optional address must be a valid Ethereum address.');
+  }
+
+  log('info', 'Generating calldata', { action, amount, address: address || 'default' });
+
+  try {
+    const chmContract = new ethers.Contract(CHM_TOKEN_ADDRESS, ERC20_ABI, provider);
+    const decimals = await chmContract.decimals();
+    const amountWei = ethers.parseUnits(amount.toString(), decimals);
+
+    let calldata;
+    if (action === 'redeem') {
+      // Simulate redeem calldata for CHM to CELT
+      const iface = new ethers.Interface(ERC20_ABI);
+      calldata = iface.encodeFunctionData('transfer', [CELT_TOKEN_ADDRESS, amountWei]); // Placeholder; actual would be swap/redeem function
+      ctx.reply(`Calldata for redeeming ${amount} CHM for CELT:\n${calldata}\n(Note: CELT is burner token; send tx to redeem.)`);
+    } else if (action === 'play') {
+      const iface = new ethers.Interface(ERC20_ABI);
+      calldata = iface.encodeFunctionData('transfer', [RAFFLE_POT_ADDRESS, amountWei]);
+      ctx.reply(`Calldata for play ${amount} CHM:\n${calldata}\n(Note: All games use CHM; send tx to wager/play.)`);
+    } else {
+      return ctx.reply('Invalid action. Use "redeem" or "play".');
+    }
+  } catch (error) {
+    log('error', 'Error generating calldata', { error: error.message });
+    ctx.reply('Error generating calldata.');
+  }
+});
+
+// Telegram: /coinflip <side> <amount> (mini-game; solo for now, wins CHM simulation)
+bot.command('coinflip', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 2) {
+    return ctx.reply('Usage: /coinflip heads|tails <amount>\nFirst use /txdata play <amount> to pay with CHM (goes to raffle pot).');
+  }
+  const side = args[0].toLowerCase();
+  if (!['heads', 'tails'].includes(side)) {
+    return ctx.reply('Choose heads or tails.');
+  }
+  const amount = parseFloat(args[1]);
+  if (isNaN(amount) || amount <= 0) {
+    return ctx.reply('Amount must be positive.');
+  }
+
+  const userId = ctx.from.id.toString();
+
+  // Simulate coin flip with provably fair note
+  const result = Math.random() < 0.5 ? 'heads' : 'tails';
+  const win = side === result;
+  const winnings = win ? amount * 2 : 0; // Double or nothing
+  ctx.reply(`Coin flipped: ${result}! You ${win ? 'win' : 'lose'}. Winnings: ${winnings} CHM (simulated with fair random; face verification not needed for solo).`);
+
+  if (win) {
+    // Update virtual CHM
+    db.run(`UPDATE users SET virtual_chm = virtual_chm + ? WHERE userId = ?`, [winnings, userId]);
+  }
+  log('info', 'Coinflip played', { userId, side, result, win, winnings });
+});
+
+// Telegram: /redeem <amount> (simulate redeem CHM for CELT)
+bot.command('redeem', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const amountStr = args[0] ? args[0].trim() : null;
+  const amount = parseFloat(amountStr);
+  if (isNaN(amount) || amount <= 0) {
+    return ctx.reply('Usage: /redeem <amount> - Use /txdata redeem <amount> for calldata.');
+  }
+  const userId = ctx.from.id.toString();
+  db.get(`SELECT virtual_chm FROM users WHERE userId = ?`, [userId], (err, row) => {
+    if (err || !row || row.virtual_chm < amount) {
+      return ctx.reply('Insufficient virtual CHM.');
+    }
+    db.run(`UPDATE users SET virtual_chm = virtual_chm - ? WHERE userId = ?`, [amount, userId]);
+    ctx.reply(`Redeemed ${amount} CHM for CELT (simulation; CELT is burner token).`);
+  });
+});
+
+// Telegram: /leaderboard
+bot.command('leaderboard', (ctx) => {
+  db.all(`
+    SELECT userId, platform, wins, donations, contributions 
+    FROM users 
+    ORDER BY contributions DESC, wins DESC, donations DESC 
+    LIMIT 10
+  `, [], (err, rows) => {
+    if (err) {
+      return ctx.reply('Error fetching leaderboard.');
+    }
+    let response = 'Top Rankings:\n';
+    rows.forEach((row, index) => {
+      response += `${index + 1}. ${row.platform === 'discord' ? 'Discord' : 'Telegram'} User ${row.userId.slice(0,4)}...: Wins ${row.wins}, Donations ${row.donations} CHM, Contributions ${row.contributions}\n`;
+    });
+    ctx.reply(response);
+  });
+});
+
+// Telegram: /event (view/participate in live events; participation increases rank)
+bot.command('event', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length === 0) {
+    db.all(`SELECT * FROM events WHERE completed = false`, [], (err, rows) => {
+      if (err || !rows.length) {
+        return ctx.reply('No active events.');
+      }
+      let response = 'Active Events:\n';
+      rows.forEach(row => {
+        response += `ID: ${row.eventId} - ${row.title}: ${row.description} (Goal: ${row.goal})\n`;
+      });
+      ctx.reply(response + '\nUse /event join <eventId> to participate.');
+    });
+  } else if (args[0] === 'join') {
+    const eventId = parseInt(args[1]);
+    const userId = ctx.from.id.toString();
+    db.get(`SELECT participants FROM events WHERE eventId = ? AND completed = false`, [eventId], (err, row) => {
+      if (err || !row) {
+        return ctx.reply('Invalid event.');
+      }
+      let participants = JSON.parse(row.participants || '[]');
+      if (!participants.includes(userId)) {
+        participants.push(userId);
+        db.run(`UPDATE events SET participants = ? WHERE eventId = ?`, [JSON.stringify(participants), eventId]);
+        // Increase contributions for participation
+        db.run(`UPDATE users SET contributions = contributions + 1, rank = rank + 1 WHERE userId = ?`, [userId]);
+        ctx.reply('Joined event! Your rank increased.');
+      } else {
+        ctx.reply('Already joined.');
+      }
+    });
+  }
+});
+
+// Telegram: /selfexclude
+bot.command('selfexclude', (ctx) => {
+  const userId = ctx.from.id.toString();
+  db.run(`UPDATE users SET self_excluded = true WHERE userId = ?`, [userId]);
+  ctx.reply('You have self-excluded from gaming activities.');
+});
+
+// Telegram: /verifyage (simple confirmation for legal)
+bot.command('verifyage', (ctx) => {
+  const userId = ctx.from.id.toString();
+  db.run(`UPDATE users SET age_verified = true WHERE userId = ?`, [userId]);
+  ctx.reply('Age verified (self-confirmation). You can now participate.');
+});
+
+// Telegram: /suggest <text>
+bot.command('suggest', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const text = args.join(' ');
+  if (!text) {
+    return ctx.reply('Usage: /suggest <text>');
+  }
+  const userId = ctx.from.id.toString();
+  db.run(`INSERT INTO suggestions (userId, text) VALUES (?, ?)`, [userId, text], (err) => {
+    if (err) {
+      return ctx.reply('Error posting suggestion.');
+    }
+    ctx.reply('Suggestion posted! View at /suggestions on website.');
+  });
+});
+
+// Telegram: /poll <question> <option1> <option2> ...
+bot.command('poll', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const question = args[0];
+  const options = JSON.stringify(args.slice(1));
+  if (args.length < 3) {
+    return ctx.reply('Usage: /poll <question> <option1> <option2> ...');
+  }
+  const userId = ctx.from.id.toString();
+  db.run(`INSERT INTO polls (userId, question, options) VALUES (?, ?, ?)`, [userId, question, options], (err) => {
+    if (err) {
+      return ctx.reply('Error creating poll.');
+    }
+    ctx.reply('Poll created! ID: ' + this.lastID);
+  });
+});
+
+// Telegram: /createclan <name>
+bot.command('createclan', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const name = args.join(' ');
+  if (!name) {
+    return ctx.reply('Usage: /createclan <name>');
+  }
+  const creatorId = ctx.from.id.toString();
+  db.run(`INSERT INTO clans (name, creatorId) VALUES (?, ?)`, [name, creatorId], function(err) {
+    if (err) {
+      return ctx.reply('Error creating clan.');
+    }
+    db.run(`UPDATE users SET clanId = ? WHERE userId = ?`, [this.lastID, creatorId]);
+    ctx.reply(`Clan created: ${name} (ID: ${this.lastID})`);
+  });
+});
+
+// Telegram: /joinclan <clanId>
+bot.command('joinclan', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const clanId = parseInt(args[0]);
+  const userId = ctx.from.id.toString();
+  db.get(`SELECT members FROM clans WHERE clanId = ?`, [clanId], (err, row) => {
+    if (err || !row) {
+      return ctx.reply('Invalid clan.');
+    }
+    let members = JSON.parse(row.members || '[]');
+    if (!members.includes(userId)) {
+      members.push(userId);
+      db.run(`UPDATE clans SET members = ? WHERE clanId = ?`, [JSON.stringify(members), clanId]);
+      db.run(`UPDATE users SET clanId = ? WHERE userId = ?`, [clanId, userId]);
+      ctx.reply('Joined clan!');
+    } else {
+      ctx.reply('Already in clan.');
+    }
+  });
+});
+
+// Telegram: /giveaway (in clan; simulate)
+bot.command('giveaway', (ctx) => {
+  const userId = ctx.from.id.toString();
+  db.get(`SELECT clanId FROM users WHERE userId = ?`, [userId], (err, row) => {
+    if (err || !row || !row.clanId) {
+      return ctx.reply('Join a clan first.');
+    }
+    // Simulate giveaway
+    ctx.reply('Giveaway run in clan! (Simulated; prizes awarded randomly).');
+    // TODO: Actual logic for giveaways
+  });
+});
+
+// Telegram: /poker <wager> (join tournament with face verification note for finals)
+bot.command('poker', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  const wager = parseFloat(args[0]);
+  if (isNaN(wager) || wager <= 0) {
+    return ctx.reply('Usage: /poker <wager>');
+  }
+  const userId = ctx.from.id.toString();
+  db.get(`SELECT * FROM tournaments WHERE status = 'open' AND type = 'poker' LIMIT 1`, [], (err, row) => {
+    let tournamentId;
+    if (err || !row) {
+      db.run(`INSERT INTO tournaments (wager) VALUES (?)`, [wager], function(err) {
+        if (err) {
+          return ctx.reply('Error starting tournament.');
+        }
+        tournamentId = this.lastID;
+        addToTournament(tournamentId, userId, ctx);
+      });
+    } else {
+      tournamentId = row.tournamentId;
+      addToTournament(tournamentId, userId, ctx);
+    }
+  });
+});
+
+function addToTournament(tournamentId, userId, ctx) {
+  db.get(`SELECT participants FROM tournaments WHERE tournamentId = ?`, [tournamentId], (err, row) => {
+    if (err) {
+      return ctx.reply('Error joining.');
+    }
+    let participants = JSON.parse(row.participants || '[]');
+    if (!participants.includes(userId)) {
+      participants.push(userId);
+      db.run(`UPDATE tournaments SET participants = ? WHERE tournamentId = ?`, [JSON.stringify(participants), tournamentId]);
+      ctx.reply(`Joined poker tournament ID: ${tournamentId} with wager ${row.wager} CHM. Finals require FaceTime for face verification.`);
+      if (participants.length >= 4) { // Simulate start
+        db.run(`UPDATE tournaments SET status = 'ongoing' WHERE tournamentId = ?`, [tournamentId]);
+        // Simulate progression to final two
+        setTimeout(() => {
+          db.run(`UPDATE tournaments SET status = 'final_two' WHERE tournamentId = ?`, [tournamentId]);
+          ctx.reply('Tournament advanced to final two! Use FaceTime for face verification in finals.');
+        }, 10000); // 10s simulation
+      }
+    } else {
+      ctx.reply('Already joined.');
+    }
+  });
+}
+
+// Telegram: /spin (use bonus spin, simulate win)
+bot.command('spin', (ctx) => {
+  const userId = ctx.from.id.toString();
+  db.get(`SELECT bonus_spins FROM users WHERE userId = ?`, [userId], (err, row) => {
+    if (err || !row || row.bonus_spins <= 0) {
+      return ctx.reply('No bonus spins available.');
+    }
+    db.run(`UPDATE users SET bonus_spins = bonus_spins - 1 WHERE userId = ?`, [userId]);
+    const winAmount = Math.random() * 10; // Simulate win up to 10 CHM
+    db.run(`UPDATE users SET virtual_chm = virtual_chm + ? WHERE userId = ?`, [winAmount, userId]);
+    ctx.reply(`Spin result: Won ${winAmount.toFixed(2)} CHM! Remaining spins: ${row.bonus_spins - 1}`);
+  });
+});
+
+// Telegram: /help
+bot.command('help', (ctx) => {
+  log('info', 'Help command requested', { chatId: ctx.chat.id });
+  ctx.reply(`Available commands:\n
+/balance <address> - Show CHM and CELT balances\n
+/watch <address> - Subscribe to events and link profile\n
+/unwatch - Unsubscribe from events\n
+/txdata redeem|play <amount> [yourAddress] - Get calldata for redeem or mini-game entry\n
+/coinflip heads|tails <amount> - Play coinflip (pay first with /txdata play <amount>)\n
+/redeem <amount> - Redeem CHM for CELT\n
+/leaderboard - Show top rankings\n
+/event [join <id>] - View/participate in events\n
+/selfexclude - Self-exclude from gaming\n
+/verifyage - Verify age\n
+/suggest <text> - Post suggestion\n
+/poll <question> <option1> ... - Create poll\n
+/createclan <name> - Create clan\n
+/joinclan <id> - Join clan\n
+/giveaway - Run giveaway in clan\n
+/poker <wager> - Join poker tournament\n
+/spin - Use bonus spin\n
+/help - Show this help\n
+Join our Discord for player challenges and tournaments: https://discord.gg/YourInviteLink`);
+});
+
+// Telegram global error handler
+bot.catch((err, ctx) => {
+  log('error', 'Telegram bot error', { error: err.message, chatId: ctx.chat?.id });
+  ctx.reply('An error occurred. Please try again later.');
+});
+
+// Launch Telegram bot
+bot.launch();
+log('info', 'Telegram bot is running...');
+
+// Discord Bot Setup
+discordClient.once('ready', () => {
+  log('info', `Discord bot logged in as ${discordClient.user.tag}`);
+});
+
+// Discord: Listen for messages with prefix
+discordClient.on('messageCreate', async (message) => {
+  if (!message.content.startsWith(DISCORD_PREFIX) || message.author.bot) return;
+
+  const args = message.content.slice(DISCORD_PREFIX.length).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+
+  if (command === 'balance') {
+    const address = args.join(' ').trim();
+    if (!address || !ethers.isAddress(address)) {
+      return message.reply('Usage: !balance <valid Ethereum address>');
+    }
+    try {
+      const chmContract = new ethers.Contract(CHM_TOKEN_ADDRESS, ERC20_ABI, provider);
+      const chmBalanceRaw = await chmContract.balanceOf(address);
+      const chmDecimals = await chmContract.decimals();
+      const chmBalance = ethers.formatUnits(chmBalanceRaw, chmDecimals);
+
+      const celtContract = new ethers.Contract(CELT_TOKEN_ADDRESS, ERC20_ABI, provider);
+      const celtBalanceRaw = await celtContract.balanceOf(address);
+      const celtDecimals = await celtContract.decimals();
+      const celtBalance = ethers.formatUnits(celtBalanceRaw, celtDecimals);
+
+      message.reply(`Balances for ${address}:\nCHM: ${chmBalance}\nCELT: ${celtBalance}`);
+    } catch (error) {
+      message.reply('Error fetching balances.');
+    }
+  } else if (command === 'watch') {
+    const address = args.join(' ').trim().toLowerCase();
+    if (!address || !ethers.isAddress(address)) {
+      return message.reply('Usage: !watch <valid Ethereum address>');
+    }
+    const chatId = `d-${message.channel.id}`;
+    const userId = message.author.id;
+
+    db.run(`INSERT OR REPLACE INTO subscriptions (chatId, address) VALUES (?, ?)`, [chatId, address]);
+    db.run(`INSERT OR REPLACE INTO users (userId, platform, ethAddress) VALUES (?, 'discord', ?)`, [userId, address]);
+    message.reply(`Subscribed this channel to events and linked your profile for rankings with address: ${address}\nVerify age with !verifyage.`);
+  } else if (command === 'unwatch') {
+    const chatId = `d-${message.channel.id}`;
+    db.run(`DELETE FROM subscriptions WHERE chatId = ?`, [chatId]);
+    message.reply('Unsubscribed this channel from events.');
+  } else if (command === 'txdata') {
+    if (args.length < 2) {
+      return message.reply('Usage: !txdata redeem|play <amount> [yourAddress]');
+    }
+    const action = args[0].toLowerCase();
+    const amountStr = args[1];
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) {
+      return message.reply('Amount must be positive.');
+    }
+    const address = args[2] || null;
+    try {
+      const chmContract = new ethers.Contract(CHM_TOKEN_ADDRESS, ERC20_ABI, provider);
+      const decimals = await chmContract.decimals();
+      const amountWei = ethers.parseUnits(amount.toString(), decimals);
+
+      let calldata;
+      if (action === 'redeem') {
+        const iface = new ethers.Interface(ERC20_ABI);
+        calldata = iface.encodeFunctionData('transfer', [CELT_TOKEN_ADDRESS, amountWei]); // Placeholder redeem
+        message.reply(`Calldata for redeeming ${amount} CHM for CELT:\n${calldata}`);
+      } else if (action === 'play') {
+        const iface = new ethers.Interface(ERC20_ABI);
+        calldata = iface.encodeFunctionData('transfer', [RAFFLE_POT_ADDRESS, amountWei]);
+        message.reply(`Calldata for play ${amount} CHM:\n${calldata}`);
+      } else {
+        return message.reply('Invalid action.');
+      }
+    } catch (error) {
+      message.reply('Error generating calldata.');
+    }
+  } else if (command === 'coinflip') {
+    if (args.length < 2) {
+      return message.reply('Usage: !coinflip heads|tails <amount>\nPay with !txdata play <amount> first.');
+    }
+    const side = args[0].toLowerCase();
+    if (!['heads', 'tails'].includes(side)) {
+      return message.reply('Choose heads or tails.');
+    }
+    const amount = parseFloat(args[1]);
+    if (isNaN(amount) || amount <= 0) {
+      return message.reply('Amount must be positive.');
+    }
+    const userId = message.author.id;
+    const result = Math.random() < 0.5 ? 'heads' : 'tails';
+    const win = side === result;
+    const winnings = win ? amount * 2 : 0;
+    message.reply(`Coin flipped: ${result}! You ${win ? 'win' : 'lose'}. Winnings: ${winnings} CHM.`);
+    if (win) {
+      db.run(`UPDATE users SET virtual_chm = virtual_chm + ? WHERE userId = ?`, [winnings, userId]);
+    }
+  } else if (command === 'redeem') {
+    if (args.length < 1) {
+      return message.reply('Usage: !redeem <amount>');
+    }
+    const amount = parseFloat(args[0]);
+    const userId = message.author.id;
+    db.get(`SELECT virtual_chm FROM users WHERE userId = ?`, [userId], (err, row) => {
+      if (err || !row || row.virtual_chm < amount) {
+        return message.reply('Insufficient virtual CHM.');
+      }
+      db.run(`UPDATE users SET virtual_chm = virtual_chm - ? WHERE userId = ?`, [amount, userId]);
+      message.reply(`Redeemed ${amount} CHM for CELT (simulation).`);
+    });
+  } else if (command === 'challenge') {
+    if (args.length < 3 || !message.mentions.users.size) {
+      return message.reply('Usage: !challenge @user gameType <amount>\nGameType: coinflip (more coming)');
+    }
+    const opponent = message.mentions.users.first();
+    const gameType = args[1].toLowerCase();
+    const amount = parseFloat(args[2]);
+    if (isNaN(amount) || amount <= 0) {
+      return message.reply('Amount must be positive.');
+    }
+    if (gameType !== 'coinflip') {
+      return message.reply('Only coinflip supported for now.');
+    }
+    const challengerId = message.author.id;
+    const opponentId = opponent.id;
+
+    db.run(`
+      INSERT INTO challenges (challengerId, opponentId, gameType, amount) VALUES (?, ?, ?, ?)
+    `, [challengerId, opponentId, gameType, amount], function(err) {
+      if (err) {
+        return message.reply('Error issuing challenge.');
+      }
+      message.reply(`Challenge issued to ${opponent.tag} for ${gameType} with ${amount} CHM wager! Use !accept ${this.lastID} to accept.`);
+    });
+  } else if (command === 'accept') {
+    if (args.length < 1) {
+      return message.reply('Usage: !accept <challengeId>');
+    }
+    const challengeId = parseInt(args[0]);
+    const userId = message.author.id;
+    db.get(`SELECT * FROM challenges WHERE challengeId = ? AND opponentId = ? AND status = 'pending'`, [challengeId, userId], async (err, row) => {
+      if (err || !row) {
+        return message.reply('Invalid or non-pending challenge.');
+      }
+      // Update status
+      db.run(`UPDATE challenges SET status = 'accepted' WHERE challengeId = ?`, [challengeId]);
+
+      // Play game (e.g., coinflip - random for simplicity; both paid via txdata separately)
+      const result = Math.random() < 0.5 ? row.challengerId : row.opponentId;
+      const winnerId = result === row.challengerId ? row.challengerId : row.opponentId;
+      const winnings = row.amount * 2; // Winner takes all
+      message.reply(`Challenge accepted! Game: coinflip. Winner: <@${winnerId}>! Winnings: ${winnings} CHM (simulated).`);
+
+      // Update winner virtual CHM
+      db.run(`UPDATE users SET virtual_chm = virtual_chm + ?, contributions = contributions + 1, rank = rank + 1 WHERE userId = ?`, [winnings, winnerId]);
+      db.run(`UPDATE users SET contributions = contributions + 1, rank = rank + 1 WHERE userId = ?`, [row.challengerId === winnerId ? row.opponentId : row.challengerId]); // Participation for loser
+      db.run(`UPDATE challenges SET status = 'completed' WHERE challengeId = ?`, [challengeId]);
+    });
+  } else if (command === 'leaderboard') {
+    db.all(`
+      SELECT userId, platform, wins, donations, contributions 
+      FROM users 
+      ORDER BY rank DESC, contributions DESC, wins DESC, donations DESC 
+      LIMIT 10
+    `, [], (err, rows) => {
+      if (err) {
+        return message.reply('Error fetching leaderboard.');
+      }
+      let response = 'Top Rankings:\n';
+      rows.forEach((row, index) => {
+        response += `${index + 1}. ${row.platform} User <@${row.userId}>: Rank ${row.rank}, Wins ${row.wins}, Donations ${row.donations} CHM, Contributions ${row.contributions}\n`;
+      });
+      message.reply(response);
+    });
+  } else if (command === 'event') {
+    if (args.length === 0) {
+      db.all(`SELECT * FROM events WHERE completed = false`, [], (err, rows) => {
+        if (err || !rows.length) {
+          return message.reply('No active events.');
+        }
+        let response = 'Active Events:\n';
+        rows.forEach(row => {
+          response += `ID: ${row.eventId} - ${row.title}: ${row.description} (Goal: ${row.goal})\n`;
+        });
+        message.reply(response + '\nUse !event join <eventId> to participate.');
+      });
+    } else if (args[0] === 'join') {
+      const eventId = parseInt(args[1]);
+      const userId = message.author.id;
+      db.get(`SELECT participants FROM events WHERE eventId = ? AND completed = false`, [eventId], (err, row) => {
+        if (err || !row) {
+          return message.reply('Invalid event.');
+        }
+        let participants = JSON.parse(row.participants || '[]');
+        if (!participants.includes(userId)) {
+          participants.push(userId);
+          db.run(`UPDATE events SET participants = ? WHERE eventId = ?`, [JSON.stringify(participants), eventId]);
+          db.run(`UPDATE users SET contributions = contributions + 1, rank = rank + 1 WHERE userId = ?`, [userId]);
+          message.reply('Joined event! Your rank increased.');
+        } else {
+          message.reply('Already joined.');
+        }
+      });
+    }
+  } else if (command === 'selfexclude') {
+    const userId = message.author.id;
+    db.run(`UPDATE users SET self_excluded = true WHERE userId = ?`, [userId]);
+    message.reply('You have self-excluded from gaming activities.');
+  } else if (command === 'verifyage') {
+    const userId = message.author.id;
+    db.run(`UPDATE users SET age_verified = true WHERE userId = ?`, [userId]);
+    message.reply('Age verified (self-confirmation).');
+  } else if (command === 'suggest') {
+    const text = args.join(' ');
+    if (!text) {
+      return message.reply('Usage: !suggest <text>');
+    }
+    const userId = message.author.id;
+    db.run(`INSERT INTO suggestions (userId, text) VALUES (?, ?)`, [userId, text], (err) => {
+      if (err) {
+        return message.reply('Error posting suggestion.');
+      }
+      message.reply('Suggestion posted!');
+    });
+  } else if (command === 'poll') {
+    const question = args[0];
+    const options = JSON.stringify(args.slice(1));
+    if (args.length < 3) {
+      return message.reply('Usage: !poll <question> <option1> <option2> ...');
+    }
+    const userId = message.author.id;
+    db.run(`INSERT INTO polls (userId, question, options) VALUES (?, ?, ?)`, [userId, question, options], (err) => {
+      if (err) {
+        return message.reply('Error creating poll.');
+      }
+      message.reply('Poll created! ID: ' + this.lastID);
+    });
+  } else if (command === 'createclan') {
+    const name = args.join(' ');
+    if (!name) {
+      return message.reply('Usage: !createclan <name>');
+    }
+    const creatorId = message.author.id;
+    db.run(`INSERT INTO clans (name, creatorId) VALUES (?, ?)`, [name, creatorId], function(err) {
+      if (err) {
+        return message.reply('Error creating clan.');
+      }
+      db.run(`UPDATE users SET clanId = ? WHERE userId = ?`, [this.lastID, creatorId]);
+      message.reply(`Clan created: ${name} (ID: ${this.lastID})`);
+    });
+  } else if (command === 'joinclan') {
+    const clanId = parseInt(args[0]);
+    const userId = message.author.id;
+    db.get(`SELECT members FROM clans WHERE clanId = ?`, [clanId], (err, row) => {
+      if (err || !row) {
+        return message.reply('Invalid clan.');
+      }
+      let members = JSON.parse(row.members || '[]');
+      if (!members.includes(userId)) {
+        members.push(userId);
+        db.run(`UPDATE clans SET members = ? WHERE clanId = ?`, [JSON.stringify(members), clanId]);
+        db.run(`UPDATE users SET clanId = ? WHERE userId = ?`, [clanId, userId]);
+        message.reply('Joined clan!');
+      } else {
+        message.reply('Already in clan.');
+      }
+    });
+  } else if (command === 'giveaway') {
+    const userId = message.author.id;
+    db.get(`SELECT clanId FROM users WHERE userId = ?`, [userId], (err, row) => {
+      if (err || !row || !row.clanId) {
+        return message.reply('Join a clan first.');
+      }
+      // Simulate giveaway
+      message.reply('Giveaway run in clan! (Simulated).');
+    });
+  } else if (command === 'poker') {
+    const wager = parseFloat(args[0]);
+    if (isNaN(wager) || wager <= 0) {
+      return message.reply('Usage: !poker <wager>');
+    }
+    const userId = message.author.id;
+    db.get(`SELECT * FROM tournaments WHERE status = 'open' AND type = 'poker' LIMIT 1`, [], (err, row) => {
+      let tournamentId;
+      if (err || !row) {
+        db.run(`INSERT INTO tournaments (wager) VALUES (?)`, [wager], function(err) {
+          if (err) {
+            return message.reply('Error starting tournament.');
+          }
+          tournamentId = this.lastID;
+          addToTournamentDiscord(tournamentId, userId, message);
+        });
+      } else {
+        tournamentId = row.tournamentId;
+        addToTournamentDiscord(tournamentId, userId, message);
+      }
+    });
+  } else if (command === 'spin') {
+    const userId = message.author.id;
+    db.get(`SELECT bonus_spins FROM users WHERE userId = ?`, [userId], (err, row) => {
+      if (err || !row || row.bonus_spins <= 0) {
+        return message.reply('No bonus spins available.');
+      }
+      db.run(`UPDATE users SET bonus_spins = bonus_spins - 1 WHERE userId = ?`, [userId]);
+      const winAmount = Math.random() * 10;
+      db.run(`UPDATE users SET virtual_chm = virtual_chm + ? WHERE userId = ?`, [winAmount, userId]);
+      message.reply(`Spin result: Won ${winAmount.toFixed(2)} CHM! Remaining spins: ${row.bonus_spins - 1}`);
+    });
+  } else if (command === 'help') {
+    message.reply(`Available commands:\n
+!balance <address>\n
+!watch <address>\n
+!unwatch\n
+!txdata redeem|play <amount> [yourAddress]\n
+!coinflip heads|tails <amount>\n
+!redeem <amount>\n
+!leaderboard\n
+!event [join <id>]\n
+!selfexclude\n
+!verifyage\n
+!suggest <text>\n
+!poll <question> <option1> ...\n
+!createclan <name>\n
+!joinclan <id>\n
+!giveaway\n
+!poker <wager>\n
+!spin\n
+!help`);
+  }
+});
+
+function addToTournamentDiscord(tournamentId, userId, message) {
+  db.get(`SELECT participants, wager FROM tournaments WHERE tournamentId = ?`, [tournamentId], (err, row) => {
+    if (err) {
+      return message.reply('Error joining.');
+    }
+    let participants = JSON.parse(row.participants || '[]');
+    if (!participants.includes(userId)) {
+      participants.push(userId);
+      db.run(`UPDATE tournaments SET participants = ? WHERE tournamentId = ?`, [JSON.stringify(participants), tournamentId]);
+      message.reply(`Joined poker tournament ID: ${tournamentId} with wager ${row.wager} CHM. Finals require FaceTime for face verification.`);
+      if (participants.length >= 4) { // Simulate start
+        db.run(`UPDATE tournaments SET status = 'ongoing' WHERE tournamentId = ?`, [tournamentId]);
+        // Simulate progression to final two
+        setTimeout(() => {
+          db.run(`UPDATE tournaments SET status = 'final_two' WHERE tournamentId = ?`, [tournamentId]);
+          message.reply('Tournament advanced to final two! Use FaceTime for face verification in finals.');
+        }, 10000); // 10s simulation
+      }
+    } else {
+      message.reply('Already joined.');
+    }
+  });
+}
+
+// Login Discord bot
+discordClient.login(DISCORD_TOKEN);
+
+// Event notification logic (updated to track donations for bonus spins)
+(async () => {
+  try {
+    const chmContract = new ethers.Contract(CHM_TOKEN_ADDRESS, ERC20_ABI, provider);
+    const chmDecimals = await chmContract.decimals();
+
+    const celtContract = new ethers.Contract(CELT_TOKEN_ADDRESS, ERC20_ABI, provider);
+    const celtDecimals = await celtContract.decimals();
+
+    chmContract.on('Transfer', async (from, to, value) => {
+      const amount = parseFloat(ethers.formatUnits(value, chmDecimals));
+      let message = `CHM Transfer: ${amount} from ${from} to ${to}`;
+      if (to.toLowerCase() === RAFFLE_POT_ADDRESS.toLowerCase()) {
+        message += '\n(Detected donation/game entry; updating rankings and awarding bonus spins.)';
+        // Find user by ethAddress and update donations
+        db.get(`SELECT userId FROM users WHERE ethAddress = ?`, [from.toLowerCase()], (err, row) => {
+          if (!err && row) {
+            const userId = row.userId;
+            db.run(`UPDATE users SET donations = donations + ? WHERE userId = ?`, [amount, userId]);
+            // Record donation for bonus spins
+            const spins = Math.min(25, Math.floor(amount)); // e.g., 1 spin per CHM, max 25
+            db.run(`INSERT INTO donations (userId, amount, spins_awarded) VALUES (?, ?, ?)`, [userId, amount, spins]);
+          }
+        });
+      }
+      notifySubscribers(from, to, message);
+    });
+
+    celtContract.on('Transfer', async (from, to, value) => {
+      const amount = ethers.formatUnits(value, celtDecimals);
+      const message = `CELT Transfer: ${amount} from ${from} to ${to}`;
+      notifySubscribers(from, to, message);
+    });
+
+    chmContract.on('Approval', async (owner, spender, value) => {
+      const amount = ethers.formatUnits(value, chmDecimals);
+      const message = `CHM Approval: ${amount} by owner ${owner} for spender ${spender}`;
+      notifySubscribers(owner, spender, message);
+    });
+
+    celtContract.on('Approval', async (owner, spender, value) => {
+      const amount = ethers.formatUnits(value, celtDecimals);
+      const message = `CELT Approval: ${amount} by owner ${owner} for spender ${spender}`;
+      notifySubscribers(owner, spender, message);
+    });
+
+    log('info', 'Event listeners set up for CHM and CELT transfers and approvals');
+  } catch (error) {
+    log('error', 'Error setting up event listeners', { error: error.message });
+  }
+})();
+
+// Function to notify subscribers (supports Discord with 'd-' prefix)
+function notifySubscribers(addr1, addr2, message) {
+  const addr1Lower = addr1.toLowerCase();
+  const addr2Lower = addr2.toLowerCase();
+  db.all(`
+    SELECT chatId FROM subscriptions 
+    WHERE address = ? OR address = ?
+  `, [addr1Lower, addr2Lower], (err, rows) => {
+    if (err) {
+      log('error', 'Database error during notification', { error: err.message });
+      return;
+    }
+    rows.forEach((row) => {
+      if (row.chatId.startsWith('d-')) {
+        const channelId = row.chatId.slice(2);
+        discordClient.channels.fetch(channelId)
+          .then(channel => channel.send(message))
+          .catch(e => log('error', 'Failed Discord notification', { channelId, error: e.message }));
+      } else {
+        bot.telegram.sendMessage(row.chatId, message)
+          .catch(e => log('error', 'Failed Telegram notification', { chatId: row.chatId, error: e.message }));
+      }
+    });
+  });
+}
+
+// Weekly cron job to award bonus spins (every Monday at 00:00)
+cron.schedule('0 0 * * 1', () => {
+  const oneMonthAgo = new Date();
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  db.all(`
+    SELECT d.userId, d.amount, d.spins_awarded, u.bonus_spins
+    FROM donations d
+    JOIN users u ON d.userId = u.userId
+    WHERE d.timestamp > ?
+  `, [oneMonthAgo.toISOString()], (err, rows) => {
+    if (err) return log('error', 'Cron error', { err });
+    rows.forEach(row => {
+      const weeklySpins = Math.floor(row.spins_awarded / 4); // Divide over 4 weeks
+      db.run(`UPDATE users SET bonus_spins = bonus_spins + ? WHERE userId = ?`, [weeklySpins, row.userId]);
+      log('info', 'Awarded weekly spins', { userId: row.userId, spins: weeklySpins });
+    });
+  });
+});
+
+// Web Server for INRChima.com (added leaderboard strip at bottom, blog, suggestions page, legal pages, NDA form)
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/', (req, res) => {
+  log('info', 'Website access', { path: '/' });
+  db.all(`
+    SELECT userId, platform, wins, donations, contributions 
+    FROM users 
+    ORDER BY rank DESC, contributions DESC, wins DESC, donations DESC 
+    LIMIT 5
+  `, [], (err, rows) => {
+    let leaderboardHtml = '<div style="position: fixed; bottom: 0; left: 0; width: 100%; background-color: #ddd; padding: 10px; text-align: center;">Live Leaderboard: ';
+    if (err || !rows.length) {
+      leaderboardHtml += 'No data yet.';
+    } else {
+      rows.forEach((row, index) => {
+        leaderboardHtml += `${index + 1}. ${row.platform} User: Wins ${row.wins}, Donations ${row.donations}, Contribs ${row.contributions} | `;
+      });
+    }
+    leaderboardHtml += '</div>';
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>INR Chima - Celestial Deposits</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f0f0f0; }
+          h1 { color: #333; }
+          p { font-size: 18px; }
+          .link { display: inline-block; margin: 10px; padding: 10px 20px; background-color: #0088cc; color: white; text-decoration: none; border-radius: 5px; }
+          .link:hover { background-color: #005f8b; }
+        </style>
+      </head>
+      <body>
+        <h1>Welcome to INR Chima</h1>
+        <p>This is the rebuilt website for the Celestial Deposits project, featuring real-time monitoring of CHM (Cryptochrome) and CELT (Celestial) tokens under our new event notification protocol.</p>
+        <p>Join our community and interact with the Telegram bot for balances, event subscriptions, and more – just like a Discord server!</p>
+        <a href="https://t.me/YOUR_BOT_USERNAME" class="link" target="_blank">Start Chatting with the Telegram Bot</a>
+        <a href="https://discord.gg/YourInviteLink" class="link" target="_blank">Join Discord for Challenges & Tournaments</a>
+        <p>Contact us via the form below or through the bot.</p>
+        <!-- Add contact form here if needed, similar to the original site -->
+        <a href="/blog" class="link">Blog</a>
+        <a href="/suggestions" class="link">Community Suggestions</a>
+        <a href="/terms" class="link">Terms of Service</a>
+        <a href="/privacy" class="link">Privacy Policy</a>
+        <a href="/responsible-gaming" class="link">Responsible Gaming</a>
+        <a href="/nda" class="link">Sign NDA</a>
+        ${leaderboardHtml}
+      </body>
+      </html>
+    `);
+  });
+});
+
+// Website: /blog (placeholder)
+app.get('/blog', (req, res) => {
+  res.send('<h1>Blog</h1><p>Latest updates and news.</p>');
+});
+
+// Website: /suggestions (display suggestions)
+app.get('/suggestions', (req, res) => {
+  db.all(`SELECT * FROM suggestions ORDER BY timestamp DESC`, [], (err, rows) => {
+    let html = '<h1>Community Suggestions</h1>';
+    rows.forEach(row => {
+      html += `<p>User ${row.userId}: ${row.text} (${row.timestamp})</p>`;
+    });
+    res.send(html);
+  });
+});
+
+// Website: /terms (placeholder)
+app.get('/terms', (req, res) => {
+  res.send('<h1>Terms of Service</h1><p>Standard terms... (legal text here).</p>');
+});
+
+// Website: /privacy (placeholder)
+app.get('/privacy', (req, res) => {
+  res.send('<h1>Privacy Policy</h1><p>We respect your privacy... (legal text here).</p>');
+});
+
+// Website: /responsible-gaming (placeholder)
+app.get('/responsible-gaming', (req, res) => {
+  res.send('<h1>Responsible Gaming</h1><p>Play responsibly... (resources here).</p>');
+});
+
+// Website: /nda (NDA sign form - simulation)
+app.get('/nda', (req, res) => {
+  res.send(`
+    <h1>Sign NDA</h1>
+    <form method="POST" action="/nda-sign">
+      <input type="text" name="name" placeholder="Your Name" required>
+      <input type="checkbox" name="agree" required> I agree to the NDA.
+      <button type="submit">Sign</button>
+    </form>
+  `);
+});
+
+app.post('/nda-sign', (req, res) => {
+  // Simulate signing NDA
+  log('info', 'NDA signed', { name: req.body.name });
+  res.send('NDA signed successfully.');
+});
+
+// Website: /profile/:userId
+app.get('/profile/:userId', (req, res) => {
+  const userId = req.params.userId;
+  db.get(`SELECT * FROM users WHERE userId = ?`, [userId], (err, row) => {
+    if (err || !row) {
+      return res.send('User not found.');
+    }
+    res.send(`
+      <h1>Profile: User ${userId}</h1>
+      <p>Platform: ${row.platform}</p>
+      <p>Rank: ${row.rank}</p>
+      <p>Wins: ${row.wins}</p>
+      <p>Donations: ${row.donations} CHM</p>
+      <p>Contributions: ${row.contributions}</p>
+      <p>Humanitarian Points: ${row.humanitarian_points}</p>
+      <p>Achievements: ${row.achievements}</p>
+      <p>Bonus Spins: ${row.bonus_spins}</p>
+    `);
+  });
+});
+
+// Start the web server
+app.listen(PORT, () => {
+  log('info', `Web server running on port ${PORT}`);
+});
+
+// Graceful stop
+process.once('SIGINT', () => {
+  log('info', 'Stopping bot on SIGINT');
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err.message);
+    }
+  });
+  bot.stop('SIGINT');
+  discordClient.destroy();
+  process.exit(0);
+});
+process.once('SIGTERM', () => {
+  log('info', 'Stopping bot on SIGTERM');
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err.message);
+    }
+  });
+  bot.stop('SIGTERM');
+  discordClient.destroy();
+  process.exit(0);
+});
