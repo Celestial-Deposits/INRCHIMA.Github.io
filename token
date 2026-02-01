@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract CelestialChimaToken {
+    // Celestial Token — the vault gold
+    string public constant nameCT = "Celestial Token";
+    string public constant symbolCT = "CELT";
+
+    // Chima — the play chip
+    string public constant nameChima = "Chima";
+    string public constant symbolChima = "CHM";
+
+    uint8 public constant decimals = 18;
+    uint256 public constant TOTAL_CELT_SUPPLY = 1_000_000 * 10**18;
+    uint256 public constant TOTAL_CHIMA_SUPPLY = 100_000_000 * 10**18;
+
+    mapping(address => uint256) public balanceOfCT;
+    mapping(address => uint256) public balanceOfChima;
+
+    uint256 public totalSupplyCT;
+    uint256 public totalSupplyChima;
+
+    address public owner;
+    address public vault;
+
+    event TransferCT(address indexed from, address indexed to, uint256 value);
+    event TransferChima(address indexed from, address indexed to, uint256 value);
+    event BurnChima(address indexed from, uint256 value);
+    event RedeemChima(address indexed user, uint256 chimaBurned, uint256 celtEarned);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Nope.");
+        _;
+    }
+
+    constructor(address _vault) {
+        owner = msg.sender;
+        vault = _vault;
+
+        // Mint initial supplies
+        balanceOfCT[vault] = TOTAL_CELT_SUPPLY;
+        totalSupplyCT = TOTAL_CELT_SUPPLY;
+
+        balanceOfChima[msg.sender] = TOTAL_CHIMA_SUPPLY;
+        totalSupplyChima = TOTAL_CHIMA_SUPPLY;
+    }
+
+    // Basic transfer for CELT (e.g., from vault or users)
+    function transferCT(address to, uint256 amount) external {
+        require(balanceOfCT[msg.sender] >= amount, "Insufficient CELT");
+        balanceOfCT[msg.sender] -= amount;
+        balanceOfCT[to] += amount;
+        emit TransferCT(msg.sender, to, amount);
+    }
+
+    // Basic transfer for Chima
+    function transferChima(address to, uint256 amount) external {
+        require(balanceOfChima[msg.sender] >= amount, "Insufficient Chima");
+        balanceOfChima[msg.sender] -= amount;
+        balanceOfChima[to] += amount;
+        emit TransferChima(msg.sender, to, amount);
+    }
+
+    // Burn Chima → mint/transfer Celestial from vault
+    function redeemChima(uint256 amount) external {
+        require(balanceOfChima[msg.sender] >= amount, "Not enough Chima");
+        uint256 celestialEarned = amount / 1000; // 1:1000 ratio
+        require(celestialEarned > 0, "Amount too small");
+        require(balanceOfCT[vault] >= celestialEarned, "Vault insufficient CELT");
+
+        // Burn Chima
+        balanceOfChima[msg.sender] -= amount;
+        totalSupplyChima -= amount;
+        emit BurnChima(msg.sender, amount);
+
+        // Transfer CELT from vault to user
+        balanceOfCT[vault] -= celestialEarned;
+        balanceOfCT[msg.sender] += celestialEarned;
+        emit TransferCT(vault, msg.sender, celestialEarned);
+        emit RedeemChima(msg.sender, amount, celestialEarned);
+    }
+
+    // Burn 50% to charity (actual burn), transfer 50% to vault pools
+    function burnForCharity(uint256 amount) external {
+        require(balanceOfChima[msg.sender] >= amount, "Broke.");
+        uint256 charity = amount * 50 / 100;
+        uint256 vaultShare = amount - charity;
+
+        // Transfer vault share
+        balanceOfChima[msg.sender] -= vaultShare;
+        balanceOfChima[vault] += vaultShare;
+        emit TransferChima(msg.sender, vault, vaultShare);
+
+        // Burn charity share (auto-send to weekly/monthly/yearly pools later via separate function)
+        balanceOfChima[msg.sender] -= charity;
+        totalSupplyChima -= charity;
+        emit BurnChima(msg.sender, charity);
+    }
+}
