@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Accessible Ad Modal</title>
+  <style>
+    :root {
+      --backdrop: rgba(0,0,0,0.6);
+      --modal-bg: #fff;
+      --accent: #0070f3;
+      --radius: 10px;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: #f4f4f4;
+    }
+
+    /* Modal Backdrop */
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--backdrop);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    /* Modal Container */
+    .modal {
+      background: var(--modal-bg);
+      border-radius: var(--radius);
+      max-width: 400px;
+      width: 90%;
+      padding: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+      position: relative;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    /* Close Button */
+    .modal-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #666;
+      transition: color 0.2s;
+    }
+
+    .modal-close:hover,
+    .modal-close:focus {
+      color: #000;
+    }
+
+    .modal-close:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Modal Content */
+    .modal-content {
+      text-align: center;
+    }
+
+    .modal-content h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      color: #333;
+    }
+
+    .modal-content p {
+      margin: 0 0 20px;
+      color: #666;
+    }
+
+    .modal-content img {
+      max-width: 100%;
+      border-radius: var(--radius);
+      margin-bottom: 15px;
+    }
+
+    /* Call to Action Button */
+    .modal-cta {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .modal-cta:hover,
+    .modal-cta:focus {
+      background: darken(var(--accent), 10%);
+    }
+
+    .modal-cta:focus {
+      outline: 2px solid #fff;
+      outline-offset: 2px;
+    }
+
+    /* Trigger Button (for demo) */
+    .trigger-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: var(--radius);
+      font-size: 18px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .trigger-btn:hover,
+    .trigger-btn:focus {
+      background: darken(var(--accent), 10%);
+    }
+
+    .trigger-btn:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ARIA Live Region (off-screen) */
+    #liveRegion {
+      position: absolute;
+      left: -9999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <button class="trigger-btn" onclick="openModal()">Show Ad Modal</button>
+
+  <div id="modalBackdrop" class="modal-backdrop">
+    <div role="dialog" aria-modal="true" aria-labelledby="modalTitle" class="modal">
+      <button class="modal-close" aria-label="Close modal" onclick="closeModal()">&times;</button>
+      <div class="modal-content">
+        <img src="https://via.placeholder.com/400x200?text=Ad+Image" alt="Advertisement image description">
+        <h2 id="modalTitle">Special Offer!</h2>
+        <p>Get 20% off on your next purchase. Limited time only!</p>
+        <button class="modal-cta" onclick="window.location.href='https://example.com'">Shop Now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARIA Live Region -->
+  <div id="liveRegion" aria-live="polite" role="status"></div>
+
+  <script>
+    function openModal() {
+      document.getElementById('modalBackdrop').classList.add('open');
+      document.getElementById('modalBackdrop').querySelector('.modal-close').focus();
+      // Announce modal open via live region
+      document.getElementById('liveRegion').textContent = 'Advertisement modal has opened. Special offer details are available.';
+    }
+
+    function closeModal() {
+      document.getElementById('modalBackdrop').classList.remove('open');
+      // Optional: Announce close if needed
+      document.getElementById('liveRegion').textContent = 'Advertisement modal has closed.';
+      document.querySelector('.trigger-btn').focus();
+    }
+
+    // Close on Escape key for accessibility
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.getElementById('modalBackdrop').classList.contains('open')) {
+        closeModal();
+      }
+    });
+
+    // Trap focus inside modal
+    const modal = document.querySelector('.modal');
+    modal.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
