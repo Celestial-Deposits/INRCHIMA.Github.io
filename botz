@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract SweepstakesEngine is Ownable {
+    IERC20 public immutable chimaToken;      // Entertainment only
+    IERC20 public immutable celestialToken;  // Redeemable prizes
+    
+    address public treasury;                 // Platform profit wallet
+    address public constant EXTERNAL_DONATION_WALLET = 0xFb6eB0CEc2aD251E6D5E7dFF374A15cB50Ec46ed; // Final USD receiver after release
+    
+    uint256 public constant CONVERSION_RATIO = 10; // Chima value = 1/10 Celestial
+    
+    mapping(address => uint256) public redeemableCelestialBalances;
+
+    // Donation Vault: Holds 50% funds until giveaway releases
+    uint256 public donationVaultBalance; // In ETH (or stablecoin if swapped)
+    
+    // Tracking for banner
+    uint256 public yearToDateDonationsSent; // Cumulative sent this year
+    uint256 public totalMealsPurchased;     // Assuming 1 USD ≈ 1 meal; adjust rate below
+    uint256 public constant MEALS_PER_DOLLAR = 1; // Customize: e.g., 10 for $1 buys 10 meals
+    
+    // Upcoming events: Array of strings for frontend banner rotation
+    string[] public upcomingEvents; // e.g., ["Event1: Jan 15", "Event2: Feb 20"]
+    
+    // Current year for YTD tracking (admin set or auto via timestamp)
+    uint256 public currentYear;
+    
+    // Package struct: price in wei, Chima amount, base Celestial bonus
+    struct Package {
+        uint256 price;          // in wei (ETH)
+        uint256 chimaAmount;
+        uint256 baseCelestial;
+    }
+
+    Package[] public packages;
+
+    event BundlePurchased(address indexed buyer, uint256 packageId, uint256 chimaAmount, uint256 celestialBonus);
+    event FundsAddedToVault(uint256 amount);
+    event DonationReleased(uint256 amount, address to, uint256 meals);
+    event EventUpdated(string eventDesc);
+    event YearReset(uint256 newYear);
+
+    constructor(
+        address _chima,
+        address _celestial,
+        address _treasury
+    ) Ownable(msg.sender) {
+        chimaToken = IERC20(_chima);
+        celestialToken = IERC20(_celestial);
+        treasury = _treasury;
+        currentYear = 2026; // Initial; update via admin if needed
+
+        // Define packages (prices in ETH approx $; use oracle in prod)
+        _addPackage(0.0004 ether, 100_000 * 10**18, 1);   // ~$0.99
+        _addPackage(0.004 ether, 1_000_000 * 10**18, 5);  // ~$9.99
+        _addPackage(0.009 ether, 2_500_000 * 10**18, 10); // ~$19.99
+        _addPackage(0.02 ether, 5_000_000 * 10**18, 25);  // ~$49.99
+        _addPackage(0.05 ether, 15_000_000 * 10**18, 75); // ~$99.99
+        _addPackage(0.1 ether, 30_000_000 * 10**18, 150); // ~$249.99
+    }
+
+    function _addPackage(uint256 price, uint256 chima, uint256 baseCel) internal {
+        packages.push(Package(price, chima, baseCel));
+    }
+
+    // Buy a package by ID
+    function purchasePackage(uint256 packageId) external payable {
+        require(packageId < packages.length, "Invalid package");
+        Package memory pkg = packages[packageId];
+        require(msg.value >= pkg.price, "Insufficient payment");
+
+        // Transfer Chima to buyer
+        chimaToken.transfer(msg.sender, pkg.chimaAmount);
+
+        // Calculate bonus Celestial
+        uint256 dollarsApprox = msg.value / 1e15; // Rough ETH to USD (1 ETH ~ $2500; adjust w/ oracle)
+        uint256 base = pkg.baseCelestial;
+
+        uint256 extra = 0;
+        if (dollarsApprox > 5) extra += 1;
+        if (dollarsApprox >= 10) extra += ((dollarsApprox / 10) * 5) / 10; // 0.5 per $10
+
+        uint256 totalCelestial = base + extra;
+
+        celestialToken.transfer(msg.sender, totalCelestial);
+        redeemableCelestialBalances[msg.sender] += totalCelestial;
+
+        emit BundlePurchased(msg.sender, packageId, pkg.chimaAmount, totalCelestial);
+
+        // 50% to Donation Vault (held here)
+        uint256 half = msg.value / 2;
+        donationVaultBalance += half;
+        emit FundsAddedToVault(half);
+
+        // Remaining 50% (profit) to treasury
+        payable(treasury).transfer(msg.value - half);
+
+        // Prod: Swap ETH to USD stablecoin via Uniswap before adding to vault/treasury
+    }
+
+    // Admin: Release from vault to giveaway (updates YTD and meals)
+    function releaseDonation(uint256 amount, address payable giveawayAddress) external onlyOwner {
+        require(amount <= donationVaultBalance, "Insufficient vault balance");
+        donationVaultBalance -= amount;
+
+        // Assume amount in USD equiv (after swap); update meals
+        uint256 meals = (amount / 1e15) * MEALS_PER_DOLLAR; // ETH to $ approx
+        totalMealsPurchased += meals;
+        yearToDateDonationsSent += amount / 1e15; // $ equiv
+
+        // Send to giveaway (or external wallet)
+        giveawayAddress.transfer(amount);
+        // Or if to EXTERNAL_DONATION_WALLET: payable(EXTERNAL_DONATION_WALLET).transfer(amount);
+
+        emit DonationReleased(amount, giveawayAddress, meals);
+    }
+
+    // Admin: Add/update upcoming events for banner
+    function addUpcomingEvent(string memory eventDesc) external onlyOwner {
+        upcomingEvents.push(eventDesc);
+        emit EventUpdated(eventDesc);
+    }
+
+    function removeUpcomingEvent(uint256 index) external onlyOwner {
+        require(index < upcomingEvents.length, "Invalid index");
+        upcomingEvents[index] = upcomingEvents[upcomingEvents.length - 1];
+        upcomingEvents.pop();
+    }
+
+    // Admin: Reset YTD at new year
+    function resetYear(uint256 newYear) external onlyOwner {
+        yearToDateDonationsSent = 0;
+        currentYear = newYear;
+        emit YearReset(newYear);
+    }
+
+    // View: Get all banner data
+    function getBannerData() external view returns (
+        uint256 ytdDonations,
+        uint256 meals,
+        string[] memory events
+    ) {
+        return (yearToDateDonationsSent, totalMealsPurchased, upcomingEvents);
+    }
+
+    // Existing functions (awardWinnings, redeemCelestial, etc.)...
+
+    // Fallback
+    receive() external payable {}
+}
