@@ -1,0 +1,14 @@
+{
+  "chainId": 143,
+  "address": "0xf6e06B54855eFf198a2d9a8686113665499a6134",
+  "name": "Celestial",
+  "symbol": "CELT",
+  "decimals": 18,
+  "extensions": {
+    "coinGeckoId": "celestial-governance-token", 
+    "bridgeInfo": {
+      "protocol": "wormhole", 
+      "bridgeAddress": "0x0000000000000000000000000000000000000000"
+    }
+  }
+}
