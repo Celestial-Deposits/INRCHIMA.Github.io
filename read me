@@ -1,0 +1,13 @@
+# Enclave Security Integration
+
+This repository provides a basic integration of secure enclaves using the Open Enclave SDK. Enclaves enable isolated, secure execution of code, protecting sensitive data and operations from the rest of the system.
+
+## Prerequisites
+
+- Install Open Enclave SDK: Follow the [installation guide](https://openenclave.io/sdk/getting-started/install_oe_sdk-Ubuntu_20.04).
+- Supported hardware: Intel SGX-enabled CPU or compatible TEE.
+- Build tools: CMake, Make, GCC/Clang.
+
+## Building and Running
+
+1. Clone the repo:
